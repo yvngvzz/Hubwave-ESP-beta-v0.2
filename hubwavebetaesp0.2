@@ -1,0 +1,201 @@
+-- HUBWAVE :: Counter-Blox Toggle Edition
+-- ESP ligado/desligado com "E"
+-- Aimbot somente enquanto segura botão direito do mouse
+
+--------------------------------------------------------------------------------
+-- CONFIG
+--------------------------------------------------------------------------------
+local CFG = {
+    -- ESP
+    ESP_START_ON      = true,   -- estado inicial
+    ESP_TEAMCHECK     = true,
+    ESP_BOX           = true,
+    ESP_HEALTH        = true,
+    ESP_NAME          = true,
+    ESP_DISTANCE      = true,
+    ESP_MAXDIST       = 750,
+
+    -- AIM
+    AIM_TEAMCHECK     = true,
+    AIM_FOV           = 180,
+    AIM_SMOOTH        = 1.0,
+    AIM_HITPART       = "Head",
+    AIM_WALLCHECK     = true
+}
+
+--------------------------------------------------------------------------------
+-- SERVICES
+--------------------------------------------------------------------------------
+local Players     = game:GetService("Players")
+local RunService  = game:GetService("RunService")
+local UIS         = game:GetService("UserInputService")
+local Workspace   = game:GetService("Workspace")
+local Camera      = Workspace.CurrentCamera
+
+local LP          = Players.LocalPlayer
+local ESP_STATE   = CFG.ESP_START_ON
+local AIM_DOWN    = false
+
+--------------------------------------------------------------------------------
+-- UTILS
+--------------------------------------------------------------------------------
+local function GetCharacter(plr)
+    return plr.Character or plr.CharacterAdded:Wait()
+end
+
+local function TeamCheck(plr)
+    return plr.TeamColor == LP.TeamColor
+end
+
+local function Visible(part)
+    if not CFG.AIM_WALLCHECK then return true end
+    local ray = Ray.new(Camera.CFrame.Position, (part.Position - Camera.CFrame.Position).Unit * 5000)
+    local hit = Workspace:FindPartOnRayWithIgnoreList(ray, {LP.Character})
+    return hit and hit:IsDescendantOf(part.Parent)
+end
+
+--------------------------------------------------------------------------------
+-- ESP
+--------------------------------------------------------------------------------
+local ESP = {}
+
+function ESP:Create(plr)
+    local objects = {}
+    local function new(class, props)
+        local obj = Drawing.new(class)
+        for k,v in pairs(props) do obj[k] = v end
+        table.insert(objects, obj)
+        return obj
+    end
+
+    local box    = new("Quad", {Visible = false, Color = Color3.new(1,1,1), Thickness = 1, Filled = false})
+    local name   = new("Text", {Visible = false, Color = Color3.new(1,1,1), Center = true, Outline = true, Size = 18})
+    local health = new("Text", {Visible = false, Color = Color3.new(0,1,0), Center = true, Outline = true, Size = 16})
+    local dist   = new("Text", {Visible = false, Color = Color3.new(1,1,0), Center = true, Outline = true, Size = 16})
+
+    local conn
+    conn = RunService.RenderStepped:Connect(function()
+        local char = GetCharacter(plr)
+        local hr   = char:FindFirstChild("HumanoidRootPart")
+        local hum  = char:FindFirstChildOfClass("Humanoid")
+        if not hr or not hum or (CFG.ESP_TEAMCHECK and TeamCheck(plr)) or not ESP_STATE then
+            for _,o in ipairs(objects) do o.Visible = false end
+            return
+        end
+
+        local pos, onScreen = Camera:WorldToViewportPoint(hr.Position)
+        if not onScreen or pos.Z < 0 or (hr.Position - Camera.CFrame.Position).Magnitude > CFG.ESP_MAXDIST then
+            for _,o in ipairs(objects) do o.Visible = false end
+            return
+        end
+
+        local sz   = char:GetExtentsSize()
+        local top  = Camera:WorldToViewportPoint((hr.CFrame * CFrame.new(0, sz.Y/2 + 2, 0)).Position)
+        local bot  = Camera:WorldToViewportPoint((hr.CFrame * CFrame.new(0, -sz.Y/2 - 2, 0)).Position)
+
+        local h = math.abs(top.Y - bot.Y)
+        local w = h * 0.55
+
+        -- Box
+        if CFG.ESP_BOX then
+            box.Visible = true
+            box.PointA = Vector2.new(top.X + w/2, top.Y)
+            box.PointB = Vector2.new(top.X - w/2, top.Y)
+            box.PointC = Vector2.new(bot.X - w/2, bot.Y)
+            box.PointD = Vector2.new(bot.X + w/2, bot.Y)
+        else box.Visible = false end
+
+        -- Name
+        if CFG.ESP_NAME then
+            name.Visible = true; name.Text = plr.Name; name.Position = Vector2.new(top.X, top.Y - 18)
+        else name.Visible = false end
+
+        -- Health
+        if CFG.ESP_HEALTH then
+            local hp, mx = math.floor(hum.Health + 0.5), math.floor(hum.MaxHealth + 0.5)
+            health.Visible = true; health.Text = hp.."/"..mx; health.Position = Vector2.new(top.X, bot.Y + 4)
+            health.Color = hp > mx*0.5 and Color3.new(0,1,0) or hp > mx*0.25 and Color3.new(1,1,0) or Color3.new(1,0,0)
+        else health.Visible = false end
+
+        -- Distance
+        if CFG.ESP_DISTANCE then
+            dist.Visible = true; dist.Text = tostring(math.floor((hr.Position - Camera.CFrame.Position).Magnitude + 0.5)).."m"; dist.Position = Vector2.new(top.X, bot.Y + 20)
+        else dist.Visible = false end
+    end)
+
+    ESP[plr] = {objects = objects, conn = conn}
+end
+
+function ESP:Remove(plr)
+    if ESP[plr] then
+        ESP[plr].conn:Disconnect()
+        for _,o in ipairs(ESP[plr].objects) do o:Remove() end
+        ESP[plr] = nil
+    end
+end
+
+-- auto hook
+Players.PlayerAdded:Connect(function(p) ESP:Create(p) end)
+Players.PlayerRemoving:Connect(function(p) ESP:Remove(p) end)
+for _,p in ipairs(Players:GetPlayers()) do if p ~= LP then ESP:Create(p) end end
+
+--------------------------------------------------------------------------------
+-- AIMBOT (RMB hold)
+--------------------------------------------------------------------------------
+local aimTarget = nil
+
+local function GetClosest()
+    local closest, min = nil, CFG.AIM_FOV
+    for _,plr in ipairs(Players:GetPlayers()) do
+        if plr == LP or (CFG.AIM_TEAMCHECK and TeamCheck(plr)) then continue end
+        local char = GetCharacter(plr)
+        local part = char:FindFirstChild(CFG.AIM_HITPART) or char:FindFirstChild("Head")
+        if not part then continue end
+        if CFG.AIM_WALLCHECK and not Visible(part) then continue end
+
+        local screen = Camera:WorldToViewportPoint(part.Position)
+        if screen.Z < 0 then continue end
+
+        local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+        local diff   = (Vector2.new(screen.X, screen.Y) - center).Magnitude
+        if diff < min then min = diff; closest = part end
+    end
+    return closest
+end
+
+RunService:BindToRenderStep("CB_Aim", Enum.RenderPriority.Camera.Value, function()
+    if not AIM_DOWN then aimTarget = nil; return end
+    aimTarget = GetClosest()
+    if aimTarget then
+        local screen = Camera:WorldToViewportPoint(aimTarget.Position)
+        local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+        local delta  = (Vector2.new(screen.X, screen.Y) - center) / CFG.AIM_SMOOTH
+        mousemoverel(delta.X, delta.Y)
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- INPUT TOGGLES
+--------------------------------------------------------------------------------
+UIS.InputBegan:Connect(function(inp, gp)
+    if gp then return end
+    -- ESP toggle
+    if inp.KeyCode == Enum.KeyCode.E then
+        ESP_STATE = not ESP_STATE
+    end
+    -- Aimbot key (RMB)
+    if inp.UserInputType == Enum.UserInputType.MouseButton2 then
+        AIM_DOWN = true
+    end
+end)
+
+UIS.InputEnded:Connect(function(inp, gp)
+    if gp then return end
+    if inp.UserInputType == Enum.UserInputType.MouseButton2 then
+        AIM_DOWN = false
+    end
+end)
+
+--------------------------------------------------------------------------------
+-- END :: THANK YOU FOR USING!
+--------------------------------------------------------------------------------
